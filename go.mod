@@ -1,4 +1,4 @@
-module github.com/hlpmenu/gofast/
+module github.com/hlpmenu/gofast
 
 go 1.22.1
 
