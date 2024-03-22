@@ -1,6 +1,6 @@
-module github.com/yookoala/gofast
+module github.com/hlpmenu/gofast/
 
-go 1.7
+go 1.22.1
 
 require (
 	github.com/go-restit/lzjson v0.0.0-20161206095556-efe3c53acc68
