@@ -97,6 +97,14 @@ func BasicSession(client Client, req *Request) (*ResponsePipe, error) {
 //	REQUEST_SCHEME
 //	REQUEST_URI
 //	QUERY_STRING
+var serverName = "gofast"
+
+// Dont execute the regex for each router call
+var pathinfoRe = regexp.MustCompile(`^(.+\.php)(/?.+)$`)
+
+func SetServerName(name string) {
+	serverName = name
+}
 func BasicParamsMap(inner SessionHandler) SessionHandler {
 	return func(client Client, req *Request) (*ResponsePipe, error) {
 
@@ -137,7 +145,7 @@ func BasicParamsMap(inner SessionHandler) SessionHandler {
 		req.Params["SERVER_PORT"] = serverPort
 		req.Params["SERVER_NAME"] = host
 		req.Params["SERVER_PROTOCOL"] = r.Proto
-		req.Params["SERVER_SOFTWARE"] = "gofast"
+		req.Params["SERVER_SOFTWARE"] = serverName
 		req.Params["REDIRECT_STATUS"] = "200"
 		req.Params["REQUEST_SCHEME"] = r.URL.Scheme
 		req.Params["REQUEST_METHOD"] = r.Method
@@ -208,9 +216,9 @@ type FileSystemRouter struct {
 //	SCRIPT_FILENAME
 //	DOCUMENT_URI
 //	DOCUMENT_ROOT
+
 func (fs *FileSystemRouter) Router() Middleware {
-	pathinfoRe := regexp.MustCompile(`^(.+\.php)(/?.+)$`)
-	docroot := filepath.Join(fs.DocRoot) // converts to absolute path
+	docroot := fs.DocRoot // Only use absolute path
 	return func(inner SessionHandler) SessionHandler {
 		return func(client Client, req *Request) (*ResponsePipe, error) {
 
@@ -220,7 +228,7 @@ func (fs *FileSystemRouter) Router() Middleware {
 			fastcgiScriptName := r.URL.Path
 
 			var fastcgiPathInfo string
-			if matches := pathinfoRe.Copy().FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
+			if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
 				fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
 			}
 
@@ -345,7 +353,7 @@ func MapFilterRequest(fs http.FileSystem) Middleware {
 			fastcgiScriptName := r.URL.Path
 
 			var fastcgiPathInfo string
-			pathinfoRe := regexp.MustCompile(`^(.+\.php)(/?.+)$`)
+			//	pathinfoRe := regexp.MustCompile(`^(.+\.php)(/?.+)$`)
 			if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
 				fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
 			}
