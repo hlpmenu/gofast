@@ -231,17 +231,18 @@ func (fs *FileSystemRouter) Router() Middleware {
 			r := req.Raw
 			var fastcgiScriptName = r.URL.Path
 
-			var fastcgiPathInfo string
-			if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
-				fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
-			}
+			// var fastcgiPathInfo string
+			// if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
+			// 	fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
+			// }
+			fastcgiPathInfo := r.URL.Path
 
 			// // If accessing a directory, try accessing document index file
 			if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
 				fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
 			} else if filepath.Ext(fastcgiScriptName) != ".php" {
 				fastcgiScriptName = path.Join(docroot + "index.php")
-				fastcgiPathInfo = r.URL.Path
+				//fastcgiPathInfo = r.URL.Path
 			}
 
 			req.Params["PATH_INFO"] = fastcgiPathInfo
