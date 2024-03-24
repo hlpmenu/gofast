@@ -244,7 +244,7 @@ func (fs *FileSystemRouter) Router() Middleware {
 			req.Params["PATH_INFO"] = fastcgiPathInfo
 			req.Params["PATH_TRANSLATED"] = filepath.Join(docroot, fastcgiPathInfo)
 			req.Params["SCRIPT_NAME"] = fastcgiScriptName
-			req.Params["SCRIPT_FILENAME"] = fastcgiScriptName
+			req.Params["SCRIPT_FILENAME"] = filepath.Join(docroot, fastcgiScriptName)
 			req.Params["DOCUMENT_URI"] = r.URL.Path
 			req.Params["DOCUMENT_ROOT"] = docroot
 
