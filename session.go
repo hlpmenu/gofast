@@ -232,10 +232,10 @@ func (fs *FileSystemRouter) Router() Middleware {
 				fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
 			}
 
-			// If accessing a directory, try accessing document index file
-			if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
-				fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
-			}
+			// // If accessing a directory, try accessing document index file
+			// if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
+			// 	fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
+			// }
 
 			req.Params["PATH_INFO"] = fastcgiPathInfo
 			req.Params["PATH_TRANSLATED"] = filepath.Join(docroot, fastcgiPathInfo)
