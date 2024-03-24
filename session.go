@@ -232,7 +232,7 @@ func (fs *FileSystemRouter) Router() Middleware {
 			fastcgiScriptFilename := filepath.Join(docroot, "index.php")
 			fastcgiScriptName := r.URL.Path
 
-			if strings.Contains(fastcgiScriptName, "/wp-admin") {
+			if strings.HasSuffix(fastcgiScriptName, "/wp-admin") || strings.HasSuffix(fastcgiScriptName, "/wp-admin/") {
 				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/index.php")
 			} else if filepath.Ext(fastcgiScriptName) == ".php" {
 				fastcgiScriptFilename = filepath.Join(docroot, fastcgiScriptName)
