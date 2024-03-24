@@ -239,6 +239,8 @@ func (fs *FileSystemRouter) Router() Middleware {
 			// // If accessing a directory, try accessing document index file
 			if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
 				fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
+			} else {
+				fastcgiScriptName = path.Join(docroot + "index.php")
 			}
 
 			req.Params["PATH_INFO"] = fastcgiPathInfo
