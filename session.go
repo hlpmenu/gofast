@@ -229,7 +229,7 @@ func (fs *FileSystemRouter) Router() Middleware {
 			// define some required cgi parameters
 			// with the given http request
 			r := req.Raw
-			fastcgiScriptName := r.URL.Path
+			var fastcgiScriptName = r.URL.Path
 			if strings.Contains(r.URL.Path, "/wp-admin") {
 				fastcgiScriptName = path.Join(docroot, "index.php")
 			} else {
@@ -439,7 +439,7 @@ func WpFS(root string) Middleware {
 	fs := &FileSystemRouter{
 		DocRoot:  docroot,
 		Exts:     []string{"php"},
-		DirIndex: []string{docroot + "/index.php"},
+		DirIndex: []string{"/index.php"},
 	}
 
 	return Chain(
