@@ -229,8 +229,14 @@ func (fs *FileSystemRouter) Router() Middleware {
 			// define some required cgi parameters
 			// with the given http request
 			r := req.Raw
-			var fastcgiScriptName = r.URL.Path
+			fastcgiScriptFilename := filepath.Join(docroot, "index.php")
+			fastcgiScriptName := r.URL.Path
 
+			if strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
+				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/index.php")
+			} else if filepath.Ext(fastcgiScriptName) == ".php" {
+				fastcgiScriptFilename = filepath.Join(docroot, fastcgiScriptName)
+			}
 			// var fastcgiPathInfo string
 			// if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
 			// 	fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
@@ -248,7 +254,7 @@ func (fs *FileSystemRouter) Router() Middleware {
 			req.Params["PATH_INFO"] = fastcgiPathInfo
 			req.Params["PATH_TRANSLATED"] = filepath.Join(docroot, fastcgiPathInfo)
 			req.Params["SCRIPT_NAME"] = fastcgiScriptName
-			req.Params["SCRIPT_FILENAME"] = filepath.Join(docroot, "index.php")
+			req.Params["SCRIPT_FILENAME"] = fastcgiScriptFilename
 			req.Params["DOCUMENT_URI"] = r.URL.Path
 			req.Params["DOCUMENT_ROOT"] = docroot
 
