@@ -98,12 +98,16 @@ func BasicSession(client Client, req *Request) (*ResponsePipe, error) {
 //	REQUEST_URI
 //	QUERY_STRING
 var serverName = "gofast"
+var docroot = " "
 
 // Dont execute the regex for each router call
 var pathinfoRe = regexp.MustCompile(`^(.+\.php)(/?.+)$`)
 
 func SetServerName(name string) {
 	serverName = name
+}
+func SetDocRoot(WpDir string) {
+	docroot = WpDir
 }
 func BasicParamsMap(inner SessionHandler) SessionHandler {
 	return func(client Client, req *Request) (*ResponsePipe, error) {
@@ -422,6 +426,23 @@ func NewPHPFS(root string) Middleware {
 		MapHeader,
 		fs.Router(),
 	)
+}
+
+// test
+func WpFS(root string) Middleware {
+
+	fs := &FileSystemRouter{
+		DocRoot:  docroot,
+		Exts:     []string{"php"},
+		DirIndex: []string{docroot + "/index.php"},
+	}
+
+	return Chain(
+		BasicParamsMap,
+		MapHeader,
+		fs.Router(),
+	)
+
 }
 
 // NewFileEndpoint chains BasicParamsMap, MapHeader and MapEndpoint to implement
