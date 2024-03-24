@@ -1,313 +1,445 @@
-// Copyright 2011 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
-// Package gofast implements the FastCGI protocol.
-// Currently only the responder role is supported.
-// The protocol is defined at http://www.mit.edu/~yandros/doc/specs/fcgi-spec.html
 package gofast
 
-// This file defines the raw protocol and some utilities used by the child and
-// the host.
-
 import (
-	"bufio"
-	"bytes"
-	"encoding/binary"
-	"errors"
-	"io"
-	"sync"
+	"fmt"
+	"net"
+	"net/http"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"golang.org/x/tools/godoc/vfs"
+	"golang.org/x/tools/godoc/vfs/httpfs"
 )
 
-// recType is a record type, as defined by
-// http://www.fastcgi.com/devkit/doc/fcgi-spec.html#S8
-type recType uint8
+// SessionHandler handles the gofast *Reqeust with the provided given Client.
+// The Client should properly handle the transport to the fastcgi application.
+// Should do proper routing or other parameter mapping here.
+type SessionHandler func(client Client, req *Request) (resp *ResponsePipe, err error)
 
-const (
-	typeBeginRequest    recType = 1
-	typeAbortRequest    recType = 2
-	typeEndRequest      recType = 3
-	typeParams          recType = 4
-	typeStdin           recType = 5
-	typeStdout          recType = 6
-	typeStderr          recType = 7
-	typeData            recType = 8
-	typeGetValues       recType = 9
-	typeGetValuesResult recType = 10
-	typeUnknownType     recType = 11
-)
+// Middleware transform a SessionHandler as another SessionHandler. The
+// middlewares provided by this library helps to map fastcgi parameters
+// according to the need of different application.
+//
+// You may also implement your own Middleware can be provided to modify
+// the *Request, add extra business logic in between, rewrite the response
+// stream from *ResponsePipe. or better handle errors
+//
+// Ordinary fastcgi parameters on nginx (for PHP at least):
+//
+//	fastcgi_split_path_info ^(.+\.php)(/?.+)$;
+//	fastcgi_param  SCRIPT_FILENAME    $document_root$fastcgi_script_name;
+//	fastcgi_param  PATH_INFO          $fastcgi_path_info;
+//	fastcgi_param  PATH_TRANSLATED    $document_root$fastcgi_path_info;
+//	fastcgi_param  QUERY_STRING       $query_string;
+//	fastcgi_param  REQUEST_METHOD     $request_method;
+//	fastcgi_param  CONTENT_TYPE       $content_type;
+//	fastcgi_param  CONTENT_LENGTH     $content_length;
+//	fastcgi_param  SCRIPT_NAME        $fastcgi_script_name;
+//	fastcgi_param  REQUEST_URI        $request_uri;
+//	fastcgi_param  DOCUMENT_URI       $document_uri;
+//	fastcgi_param  DOCUMENT_ROOT      $document_root;
+//	fastcgi_param  SERVER_PROTOCOL    $server_protocol;
+//	fastcgi_param  HTTPS              $https if_not_empty;
+//	fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;
+//	fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;
+//	fastcgi_param  REMOTE_ADDR        $remote_addr;
+//	fastcgi_param  REMOTE_PORT        $remote_port;
+//	fastcgi_param  SERVER_ADDR        $server_addr;
+//	fastcgi_param  SERVER_PORT        $server_port;
+//	fastcgi_param  SERVER_NAME        $server_name;
+//	# PHP only, required if PHP was built with --enable-force-cgi-redirect
+//	fastcgi_param  REDIRECT_STATUS    200;
+type Middleware func(SessionHandler) SessionHandler
 
-// String implements fmt.Stringer
-func (t recType) String() string {
-	switch t {
-	case typeBeginRequest:
-		return "FCGI_BEGIN_REQUEST"
-	case typeAbortRequest:
-		return "FCGI_BEGIN_REQUEST"
-	case typeEndRequest:
-		return "FCGI_END_REQUEST"
-	case typeParams:
-		return "FCGI_PARAMS"
-	case typeStdin:
-		return "FCGI_STDIN"
-	case typeStdout:
-		return "FCGI_STDOUT"
-	case typeStderr:
-		return "FCGI_STDERR"
-	case typeData:
-		return "FCGI_DATA"
-	case typeGetValues:
-		return "FCGI_GET_VALUES"
-	case typeGetValuesResult:
-		return "FCGI_GET_VALUES_RESULT"
-	case typeUnknownType:
-		fallthrough
-	default:
-		return "FCGI_UNKNOWN_TYPE"
+// Chain chains middlewares into a single middleware.
+//
+// The middlewares will be chained from outer to inner. The first
+// middleware will be the first to handle Client and Request. It
+// is also the last to handle ResponsePipe and error.
+func Chain(middlewares ...Middleware) Middleware {
+	if len(middlewares) == 0 {
+		return nil
 	}
-}
-
-// GoString implements fmt.GoStringer
-func (t recType) GoString() string {
-	return t.String()
-}
-
-// keep the connection between web-server and responder open after request
-const flagKeepConn = 1
-
-const (
-	maxWrite = 65535 // maximum record body
-	maxPad   = 255
-)
-
-const (
-	roleResponder = iota + 1 // only Responders are implemented.
-	roleAuthorizer
-	roleFilter
-)
-
-const (
-	statusRequestComplete = iota
-	statusCantMultiplex
-	statusOverloaded
-	statusUnknownRole
-)
-
-const headerLen = 8
-
-type header struct {
-	Version       uint8
-	Type          recType
-	ID            uint16
-	ContentLength uint16
-	PaddingLength uint8
-	Reserved      uint8
-}
-
-type beginRequest struct {
-	role     uint16
-	flags    uint8
-	reserved [5]uint8
-}
-
-func (br *beginRequest) read(content []byte) error {
-	if len(content) != 8 {
-		return errors.New("fcgi: invalid begin request record")
-	}
-	br.role = binary.BigEndian.Uint16(content)
-	br.flags = content[2]
-	return nil
-}
-
-// for padding so we don't have to allocate all the time
-// not synchronized because we don't care what the contents are
-var pad [maxPad]byte
-
-func (h *header) init(recType recType, reqID uint16, contentLength int) {
-	h.Version = 1
-	h.Type = recType
-	h.ID = reqID
-	h.ContentLength = uint16(contentLength)
-	h.PaddingLength = uint8(-contentLength & 7)
-}
-
-// conn sends records over rwc
-type conn struct {
-	mutex sync.Mutex
-	rwc   io.ReadWriteCloser
-
-	// to avoid allocations
-	buf bytes.Buffer
-	h   header
-}
-
-func newConn(rwc io.ReadWriteCloser) *conn {
-	return &conn{rwc: rwc}
-}
-
-func (c *conn) Close() error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.rwc.Close()
-}
-
-type record struct {
-	h   header
-	buf [maxWrite + maxPad]byte
-}
-
-func (rec *record) read(r io.Reader) (err error) {
-	if err = binary.Read(r, binary.BigEndian, &rec.h); err != nil {
-		return err
-	}
-	if rec.h.Version != 1 {
-		return errors.New("fcgi: invalid header version")
-	}
-	n := int(rec.h.ContentLength) + int(rec.h.PaddingLength)
-	if _, err = io.ReadFull(r, rec.buf[:n]); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (rec *record) content() []byte {
-	return rec.buf[:rec.h.ContentLength]
-}
-
-// writeRecord writes and sends a single record.
-func (c *conn) writeRecord(recType recType, reqID uint16, b []byte) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	c.buf.Reset()
-	c.h.init(recType, reqID, len(b))
-	if err := binary.Write(&c.buf, binary.BigEndian, c.h); err != nil {
-		return err
-	}
-	if _, err := c.buf.Write(b); err != nil {
-		return err
-	}
-	if _, err := c.buf.Write(pad[:c.h.PaddingLength]); err != nil {
-		return err
-	}
-	_, err := c.rwc.Write(c.buf.Bytes())
-	return err
-}
-
-func (c *conn) writeBeginRequest(reqID uint16, role Role, flags uint8) error {
-	b := [8]byte{byte(role >> 8), byte(role), flags}
-	return c.writeRecord(typeBeginRequest, reqID, b[:])
-}
-
-func (c *conn) writeEndRequest(reqID uint16, appStatus int, protocolStatus uint8) error {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint32(b, uint32(appStatus))
-	b[4] = protocolStatus
-	return c.writeRecord(typeEndRequest, reqID, b)
-}
-
-func (c *conn) writeAbortRequest(reqID uint16) error {
-	return c.writeRecord(typeAbortRequest, reqID, nil)
-}
-
-func (c *conn) writePairs(recType recType, reqID uint16, pairs map[string]string) error {
-	w := newWriter(c, recType, reqID)
-	b := make([]byte, 8)
-	for k, v := range pairs {
-		n := encodeSize(b, uint32(len(k)))
-		n += encodeSize(b[n:], uint32(len(v)))
-		if _, err := w.Write(b[:n]); err != nil {
-			return err
+	return func(inner SessionHandler) (out SessionHandler) {
+		out = inner
+		for i := len(middlewares) - 1; i >= 0; i-- {
+			out = middlewares[i](out)
 		}
-		if _, err := w.WriteString(k); err != nil {
-			return err
+		return
+	}
+}
+
+// BasicSession is the default SessionHandler used in the default Handler
+func BasicSession(client Client, req *Request) (*ResponsePipe, error) {
+	return client.Do(req)
+}
+
+// BasicParamsMap implements Middleware. It maps basic parameters to the
+// req.Params.
+//
+// Parameters included:
+//
+//	CONTENT_TYPE
+//	CONTENT_LENGTH
+//	HTTPS
+//	GATEWAY_INTERFACE
+//	REMOTE_ADDR
+//	REMOTE_PORT
+//	SERVER_PORT
+//	SERVER_NAME
+//	SERVER_PROTOCOL
+//	SERVER_SOFTWARE
+//	REDIRECT_STATUS
+//	REQUEST_METHOD
+//	REQUEST_SCHEME
+//	REQUEST_URI
+//	QUERY_STRING
+var serverName = "gofast"
+
+// Dont execute the regex for each router call
+var pathinfoRe = regexp.MustCompile(`^(.+\.php)(/?.+)$`)
+
+func SetServerName(name string) {
+	serverName = name
+}
+func BasicParamsMap(inner SessionHandler) SessionHandler {
+	return func(client Client, req *Request) (*ResponsePipe, error) {
+
+		r := req.Raw
+
+		isHTTPS := r.TLS != nil
+		if isHTTPS {
+			req.Params["HTTPS"] = "on"
 		}
-		if _, err := w.WriteString(v); err != nil {
-			return err
+
+		remoteAddr, remotePort, _ := net.SplitHostPort(r.RemoteAddr)
+		host, serverPort, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			host = r.Host
+			if isHTTPS {
+				serverPort = "443"
+			} else {
+				serverPort = "80"
+			}
+		}
+
+		cl := r.ContentLength
+		if cl < 1 {
+			cl, err = strconv.ParseInt(r.Header.Get("Content-Length"), 10, 64)
+			if err != nil {
+				cl = r.ContentLength
+			}
+		}
+		if cl >= 0 {
+			req.Params["CONTENT_LENGTH"] = strconv.FormatInt(cl, 10)
+		}
+
+		// the basic information here
+		req.Params["CONTENT_TYPE"] = r.Header.Get("Content-Type")
+		req.Params["GATEWAY_INTERFACE"] = "CGI/1.1"
+		req.Params["REMOTE_ADDR"] = remoteAddr
+		req.Params["REMOTE_PORT"] = remotePort
+		req.Params["SERVER_PORT"] = serverPort
+		req.Params["SERVER_NAME"] = host
+		req.Params["SERVER_PROTOCOL"] = r.Proto
+		req.Params["SERVER_SOFTWARE"] = serverName
+		req.Params["REDIRECT_STATUS"] = "200"
+		req.Params["REQUEST_SCHEME"] = r.URL.Scheme
+		req.Params["REQUEST_METHOD"] = r.Method
+		req.Params["REQUEST_URI"] = r.RequestURI
+		req.Params["QUERY_STRING"] = r.URL.RawQuery
+
+		return inner(client, req)
+	}
+}
+
+// MapRemoteHost does reverse DNS lookup on the r.RemoteAddr IP
+// address.
+func MapRemoteHost(inner SessionHandler) SessionHandler {
+	return func(client Client, req *Request) (*ResponsePipe, error) {
+		r := req.Raw
+		remoteAddr, _, _ := net.SplitHostPort(r.RemoteAddr)
+		names, _ := net.LookupAddr(remoteAddr)
+		if len(names) > 0 {
+			req.Params["REMOTE_HOST"] = strings.TrimRight(names[0], ".")
+		}
+		return inner(client, req)
+	}
+}
+
+// FilterAuthReqParams filter out FCGI_PARAMS key-value that is explicitly
+// forbidden to passed on in factcgi specification, include:
+//
+//	CONTENT_LENGTH;
+//	PATH_INFO;
+//	PATH_TRANSLATED; and
+//	SCRIPT_NAME
+func FilterAuthReqParams(inner SessionHandler) SessionHandler {
+	return func(client Client, req *Request) (*ResponsePipe, error) {
+		delete(req.Params, "CONTENT_LENGTH")
+		delete(req.Params, "PATH_INFO")
+		delete(req.Params, "PATH_TRANSLATED")
+		delete(req.Params, "SCRIPT_NAME")
+		return inner(client, req)
+	}
+}
+
+// FileSystemRouter helps to produce Middleware implementation for
+// mapping path related fastcgi parameters. See method Router for usage.
+type FileSystemRouter struct {
+
+	// DocRoot stores the ordinary Apache DocumentRoot parameter
+	DocRoot string
+
+	// Exts stores accepted extensions
+	Exts []string
+
+	// DirIndex stores ordinary Apache DirectoryIndex parameter
+	// for to identify file to show in directory
+	DirIndex []string
+}
+
+// Router returns a Middleware that prepare session parameters that are
+// path related. With information provided in the FileSystemRouter, it will
+// route request to script files which path matches the http request path.
+//
+// i.e. classic PHP hosting environment like Apache + mod_php
+//
+// Parameters included:
+//
+//	PATH_INFO
+//	PATH_TRANSLATED
+//	SCRIPT_NAME
+//	SCRIPT_FILENAME
+//	DOCUMENT_URI
+//	DOCUMENT_ROOT
+
+func (fs *FileSystemRouter) Router() Middleware {
+	docroot := fs.DocRoot // Only use absolute path
+	return func(inner SessionHandler) SessionHandler {
+		return func(client Client, req *Request) (*ResponsePipe, error) {
+
+			// define some required cgi parameters
+			// with the given http request
+			r := req.Raw
+			fastcgiScriptName := filepath.Join(docroot, "/index.php")
+
+			var fastcgiPathInfo string
+			if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
+				fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
+			}
+
+			// If accessing a directory, try accessing document index file
+			if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
+				fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
+			}
+
+			req.Params["PATH_INFO"] = fastcgiPathInfo
+			req.Params["PATH_TRANSLATED"] = filepath.Join(docroot, fastcgiPathInfo)
+			req.Params["SCRIPT_NAME"] = fastcgiScriptName
+			req.Params["SCRIPT_FILENAME"] = fastcgiScriptName
+			req.Params["DOCUMENT_URI"] = r.URL.Path
+			req.Params["DOCUMENT_ROOT"] = docroot
+
+			// check if the script filename is within docroot.
+			// triggers error if not.
+			if !strings.HasPrefix(req.Params["SCRIPT_FILENAME"], docroot) {
+				err := fmt.Errorf("error: access path outside of filesystem docroot")
+				return nil, err
+			}
+
+			// handle directory index
+
+			return inner(client, req)
 		}
 	}
-	w.Close()
-	return nil
 }
 
-func readSize(s []byte) (uint32, int) {
-	if len(s) == 0 {
-		return 0, 0
-	}
-	size, n := uint32(s[0]), 1
-	if size&(1<<7) != 0 {
-		if len(s) < 4 {
-			return 0, 0
+// MapHeader implement Middleware to map header field HTTP_*
+//
+// It is a convention to map header field SomeRandomField to
+// HTTP_SOME_RANDOM_FIELD. For example, if a header field "X-Hello-World" is in
+// the header, it will be mapped as "HTTP_X_HELLO_WORLD" in the fastcgi parameter
+// field.
+//
+// Note: HTTP_CONTENT_TYPE and HTTP_CONTENT_LENGTH cannot be overridden.
+func MapHeader(inner SessionHandler) SessionHandler {
+	return func(client Client, req *Request) (*ResponsePipe, error) {
+		r := req.Raw
+
+		// Explicitly map raw host field because golang core library seems to remove
+		// the header field.
+		if r.Host != "" {
+			req.Params["HTTP_HOST"] = r.Host
 		}
-		n = 4
-		size = binary.BigEndian.Uint32(s)
-		size &^= 1 << 31
-	}
-	return size, n
-}
 
-func readString(s []byte, size uint32) string {
-	if size > uint32(len(s)) {
-		return ""
-	}
-	return string(s[:size])
-}
+		// http header
+		for k, v := range r.Header {
+			formattedKey := strings.Replace(strings.ToUpper(k), "-", "_", -1)
+			if formattedKey == "CONTENT_TYPE" || formattedKey == "CONTENT_LENGTH" {
+				continue
+			}
 
-func encodeSize(b []byte, size uint32) int {
-	if size > 127 {
-		size |= 1 << 31
-		binary.BigEndian.PutUint32(b, size)
-		return 4
-	}
-	b[0] = byte(size)
-	return 1
-}
-
-// bufWriter encapsulates bufio.Writer but also closes the underlying stream when
-// Closed.
-type bufWriter struct {
-	closer io.Closer
-	*bufio.Writer
-}
-
-func (w *bufWriter) Close() error {
-	if err := w.Writer.Flush(); err != nil {
-		w.closer.Close()
-		return err
-	}
-	return w.closer.Close()
-}
-
-func newWriter(c *conn, recType recType, reqID uint16) *bufWriter {
-	s := &streamWriter{c: c, recType: recType, reqID: reqID}
-	w := bufio.NewWriterSize(s, maxWrite)
-	return &bufWriter{s, w}
-}
-
-// streamWriter abstracts out the separation of a stream into discrete records.
-// It only writes maxWrite bytes at a time.
-type streamWriter struct {
-	c       *conn
-	recType recType
-	reqID   uint16
-}
-
-func (w *streamWriter) Write(p []byte) (int, error) {
-	nn := 0
-	for len(p) > 0 {
-		n := len(p)
-		if n > maxWrite {
-			n = maxWrite
+			key := "HTTP_" + formattedKey
+			var value string
+			if len(v) > 0 {
+				//   refer to https://tools.ietf.org/html/rfc7230#section-3.2.2
+				//
+				//   A recipient MAY combine multiple header fields with the same field
+				//   name into one "field-name: field-value" pair, without changing the
+				//   semantics of the message, by appending each subsequent field value to
+				//   the combined field value in order, separated by a comma.  The order
+				//   in which header fields with the same field name are received is
+				//   therefore significant to the interpretation of the combined field
+				//   value; a proxy MUST NOT change the order of these field values when
+				//   forwarding a message.
+				value = strings.Join(v, ",")
+			}
+			req.Params[key] = value
 		}
-		if err := w.c.writeRecord(w.recType, w.reqID, p[:n]); err != nil {
-			return nn, err
-		}
-		nn += n
-		p = p[n:]
+
+		return inner(client, req)
 	}
-	return nn, nil
 }
 
-func (w *streamWriter) Close() error {
-	// send empty record to close the stream
-	return w.c.writeRecord(w.recType, w.reqID, nil)
+// MapEndpoint returns a Middleware implementation that prepare session for
+// application with only 1 file as endpoint (i.e. it will handle script routing
+// on its own). Suitable for web.py based application.
+//
+// Parameters included:
+//
+//	PATH_INFO
+//	PATH_TRANSLATED
+//	SCRIPT_NAME
+//	SCRIPT_FILENAME
+//	DOCUMENT_URI
+//	DOCUMENT_ROOT
+func MapEndpoint(endpointFile string) Middleware {
+	dir, webpath := filepath.Dir(endpointFile), "/"+filepath.Base(endpointFile)
+	return func(inner SessionHandler) SessionHandler {
+		return func(client Client, req *Request) (*ResponsePipe, error) {
+			r := req.Raw
+			req.Params["REQUEST_URI"] = r.URL.RequestURI()
+			req.Params["SCRIPT_NAME"] = webpath
+			req.Params["SCRIPT_FILENAME"] = endpointFile
+			req.Params["DOCUMENT_URI"] = r.URL.Path
+			req.Params["DOCUMENT_ROOT"] = dir
+			return inner(client, req)
+		}
+	}
+}
+
+// MapFilterRequest changes the request role to RoleFilter and add the
+// Data stream from the given file system, if file exists. Also
+// set the required params to request.
+//
+// If the file do not exists or cannot be opened, the middleware
+// will return empty response pipe and the error.
+//
+// TODO: provide way to inject authorization check
+func MapFilterRequest(fs http.FileSystem) Middleware {
+	return func(inner SessionHandler) SessionHandler {
+		return func(client Client, req *Request) (*ResponsePipe, error) {
+
+			// force role to be RoleFilter
+			req.Role = RoleFilter
+
+			// define some required cgi parameters
+			// with the given http request
+			r := req.Raw
+			fastcgiScriptName := r.URL.Path
+
+			var fastcgiPathInfo string
+			//	pathinfoRe := regexp.MustCompile(`^(.+\.php)(/?.+)$`)
+			if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
+				fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
+			}
+
+			req.Params["PATH_INFO"] = fastcgiPathInfo
+			req.Params["SCRIPT_NAME"] = fastcgiScriptName
+			req.Params["DOCUMENT_URI"] = r.URL.Path
+
+			// handle directory index
+			urlPath := r.URL.Path
+			if strings.HasSuffix(urlPath, "/") {
+				urlPath = path.Join(urlPath, "index.php")
+			}
+
+			// find the file
+			f, err := fs.Open(urlPath)
+			if err != nil {
+				err = fmt.Errorf("cannot open file: %s", err)
+				return nil, err
+			}
+
+			// map fcgi params for filtering
+			s, err := f.Stat()
+			if err != nil {
+				err = fmt.Errorf("cannot stat file: %s", err)
+				return nil, err
+			}
+			req.Params["FCGI_DATA_LAST_MOD"] = fmt.Sprintf("%d", s.ModTime().Unix())
+			req.Params["FCGI_DATA_LENGTH"] = fmt.Sprintf("%d", s.Size())
+
+			// use the file as FCGI_DATA in request
+			req.Data = f
+			return inner(client, req)
+		}
+	}
+}
+
+// NewFilterLocalFS is a shortcut to use NewFilterFS with
+// a http.FileSystem created for the given local folder.
+func NewFilterLocalFS(root string) Middleware {
+	fs := httpfs.New(vfs.OS(root))
+	return NewFilterFS(fs)
+}
+
+// NewFilterFS chains BasicParamsMap, MapHeader and MapFilterRequest
+// to implement Middleware that prepares a fastcgi Filter session
+// environment.
+func NewFilterFS(fs http.FileSystem) Middleware {
+	return Chain(
+		BasicParamsMap,
+		MapHeader,
+		MapFilterRequest(fs),
+	)
+}
+
+// NewPHPFS chains BasicParamsMap, MapHeader and FileSystemRouter to implement
+// Middleware that prepares an ordinary PHP hosting session environment.
+func NewPHPFS(root string) Middleware {
+	fs := &FileSystemRouter{
+		DocRoot:  root,
+		Exts:     []string{"php"},
+		DirIndex: []string{"index.php"},
+	}
+	return Chain(
+		BasicParamsMap,
+		MapHeader,
+		fs.Router(),
+	)
+}
+
+// NewFileEndpoint chains BasicParamsMap, MapHeader and MapEndpoint to implement
+// Middleware that prepares an ordinary web.py hosting session environment
+func NewFileEndpoint(endpointFile string) Middleware {
+	return Chain(
+		BasicParamsMap,
+		MapHeader,
+		MapEndpoint(endpointFile),
+	)
+}
+
+// NewAuthPrepare chains BasicParamsMap, MapHeader, FilterAuthReqParams to
+// implement Middleware that prepares a authorizer request
+func NewAuthPrepare() Middleware {
+	return Chain(
+		BasicParamsMap,
+		MapHeader,
+		FilterAuthReqParams,
+	)
 }
