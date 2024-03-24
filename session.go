@@ -229,7 +229,12 @@ func (fs *FileSystemRouter) Router() Middleware {
 			// define some required cgi parameters
 			// with the given http request
 			r := req.Raw
-			fastcgiScriptName := filepath.Join(docroot, "/index.php")
+			fastcgiScriptName := r.URL.Path
+			if strings.Contains(r.URL.Path, "/wp-admin") {
+				fastcgiScriptName = path.Join(docroot, "index.php")
+			} else {
+				fastcgiScriptName = filepath.Join(docroot, "/index.php")
+			}
 
 			var fastcgiPathInfo string
 			if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
