@@ -230,11 +230,6 @@ func (fs *FileSystemRouter) Router() Middleware {
 			// with the given http request
 			r := req.Raw
 			var fastcgiScriptName = r.URL.Path
-			if strings.Contains(r.URL.Path, "/wp-admin") {
-				fastcgiScriptName = path.Join(docroot, "index.php")
-			} else {
-				fastcgiScriptName = filepath.Join(docroot, "/index.php")
-			}
 
 			var fastcgiPathInfo string
 			if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
@@ -242,9 +237,9 @@ func (fs *FileSystemRouter) Router() Middleware {
 			}
 
 			// // If accessing a directory, try accessing document index file
-			// if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
-			// 	fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
-			// }
+			if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
+				fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
+			}
 
 			req.Params["PATH_INFO"] = fastcgiPathInfo
 			req.Params["PATH_TRANSLATED"] = filepath.Join(docroot, fastcgiPathInfo)
