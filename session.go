@@ -229,32 +229,43 @@ func (fs *FileSystemRouter) Router() Middleware {
 			// define some required cgi parameters
 			// with the given http request
 			r := req.Raw
-			fastcgiScriptFilename := filepath.Join(docroot, "index.php")
-			fastcgiScriptName := r.URL.Path
+			fastcgiScriptFilename := ""
+			fastcgiScriptName := ""
+			fastcgiPathInfo := ""
 
-			if strings.HasSuffix(fastcgiScriptName, "/wp-admin") || strings.HasSuffix(fastcgiScriptName, "/wp-admin/") {
-				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/index.php")
-			} else if filepath.Ext(fastcgiScriptName) == ".php" {
-				fastcgiScriptFilename = filepath.Join(docroot, fastcgiScriptName)
-			}
+			if strings.Contains(r.URL.Path, "index.php") && !strings.Contains(r.URL.Path, "wp-admin") && !strings.HasSuffix(r.URL.Path, ".php") {
+				req.Params["SCRIPT_NAME"] = "/index.php"
+				fastcgiScriptFilename = filepath.Join(docroot, "index.php")
+				fastcgiScriptName = "/index.php"
+			} else {
 
-			// Handle the specific case for WordPress installation
-			if strings.Contains(fastcgiScriptName, "/wp-admin/install.php") {
-				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/install.php")
-				fastcgiScriptName = "/wp-admin/install.php"
-			}
-			// var fastcgiPathInfo string
-			// if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
-			// 	fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
-			// }
-			fastcgiPathInfo := r.URL.Path
+				fastcgiScriptFilename = filepath.Join(docroot, "index.php")
+				fastcgiScriptName = r.URL.Path
 
-			// // If accessing a directory, try accessing document index file
-			if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
-				fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
-			} else if filepath.Ext(fastcgiScriptName) != ".php" {
-				fastcgiScriptName = path.Join(docroot + "index.php")
-				//fastcgiPathInfo = r.URL.Path
+				if strings.HasSuffix(fastcgiScriptName, "/wp-admin") || strings.HasSuffix(fastcgiScriptName, "/wp-admin/") {
+					fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/index.php")
+				} else if filepath.Ext(fastcgiScriptName) == ".php" {
+					fastcgiScriptFilename = filepath.Join(docroot, fastcgiScriptName)
+				}
+
+				// Handle the specific case for WordPress installation
+				if strings.Contains(fastcgiScriptName, "/wp-admin/install.php") {
+					fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/install.php")
+					fastcgiScriptName = "/wp-admin/install.php"
+				}
+				// var fastcgiPathInfo string
+				// if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
+				// 	fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
+				// }
+				fastcgiPathInfo = r.URL.Path
+
+				// // If accessing a directory, try accessing document index file
+				if strings.HasSuffix(fastcgiScriptName, "/") || strings.HasSuffix(fastcgiScriptName, "/wp-admin") {
+					fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
+				} else if filepath.Ext(fastcgiScriptName) != ".php" {
+					fastcgiScriptName = path.Join(docroot + "index.php")
+					//fastcgiPathInfo = r.URL.Path
+				}
 			}
 
 			req.Params["PATH_INFO"] = fastcgiPathInfo
