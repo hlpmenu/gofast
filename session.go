@@ -237,6 +237,12 @@ func (fs *FileSystemRouter) Router() Middleware {
 			} else if filepath.Ext(fastcgiScriptName) == ".php" {
 				fastcgiScriptFilename = filepath.Join(docroot, fastcgiScriptName)
 			}
+
+			// Handle the specific case for WordPress installation
+			if strings.Contains(fastcgiScriptName, "/wp-admin/install.php") {
+				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/install.php")
+				fastcgiScriptName = "/wp-admin/install.php"
+			}
 			// var fastcgiPathInfo string
 			// if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
 			// 	fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
