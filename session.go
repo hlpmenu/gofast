@@ -2,6 +2,7 @@ package gofast
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"path"
@@ -222,7 +223,7 @@ type FileSystemRouter struct {
 //	DOCUMENT_ROOT
 
 func (fs *FileSystemRouter) Router() Middleware {
-	docroot := fs.DocRoot // Only use absolute path
+	docroot := formatDocRoot(docroot) // Only use absolute path
 	return func(inner SessionHandler) SessionHandler {
 		return func(client Client, req *Request) (*ResponsePipe, error) {
 
@@ -232,21 +233,18 @@ func (fs *FileSystemRouter) Router() Middleware {
 			fastcgiScriptFilename := filepath.Join(docroot, "index.php")
 			fastcgiScriptName := r.URL.Path
 
-			if strings.HasSuffix(fastcgiScriptName, "/wp-admin") || strings.HasSuffix(fastcgiScriptName, "/wp-admin/") {
+			if (strings.HasSuffix(fastcgiScriptName, "/wp-admin") || strings.HasSuffix(fastcgiScriptName, "/wp-admin/")) && !strings.HasSuffix(fastcgiScriptName, ".php") {
 				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/index.php")
+				fastcgiScriptName = "/wp-admin/index.php"
 			} else if filepath.Ext(fastcgiScriptName) == ".php" {
 				fastcgiScriptFilename = filepath.Join(docroot, fastcgiScriptName)
 			}
-
 			// Handle the specific case for WordPress installation
 			if strings.Contains(fastcgiScriptName, "/wp-admin/install.php") {
 				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/install.php")
 				fastcgiScriptName = "/wp-admin/install.php"
 			}
-			// var fastcgiPathInfo string
-			// if matches := pathinfoRe.FindStringSubmatch(fastcgiScriptName); len(matches) > 0 {
-			// 	fastcgiScriptName, fastcgiPathInfo = matches[1], matches[2]
-			// }
+
 			fastcgiPathInfo := r.URL.Path
 
 			// // If accessing a directory, try accessing document index file
@@ -261,8 +259,15 @@ func (fs *FileSystemRouter) Router() Middleware {
 			req.Params["PATH_TRANSLATED"] = filepath.Join(docroot, fastcgiPathInfo)
 			req.Params["SCRIPT_NAME"] = fastcgiScriptName
 			req.Params["SCRIPT_FILENAME"] = fastcgiScriptFilename
-			req.Params["DOCUMENT_URI"] = r.URL.Path
+			req.Params["DOCUMENT_URI"] = r.URL.Path + "/"
 			req.Params["DOCUMENT_ROOT"] = docroot
+
+			log.Printf("PATH_INFO: %s", req.Params["PATH_INFO"])
+			log.Printf("PATH_TRANSLATED: %s", req.Params["PATH_TRANSLATED"])
+			log.Printf("SCRIPT_FILENAME: %s", req.Params["SCRIPT_FILENAME"])
+			log.Printf("SCRIPT_NAME: %s", req.Params["SCRIPT_NAME"])
+			log.Printf("DOCUMENT_URI: %s", req.Params["DOCUMENT_URI"])
+			log.Printf("DOCUMENT_ROOT: %s", req.Params["DOCUMENT_ROOT"])
 
 			// check if the script filename is within docroot.
 			// triggers error if not.
@@ -276,6 +281,13 @@ func (fs *FileSystemRouter) Router() Middleware {
 			return inner(client, req)
 		}
 	}
+}
+
+func formatDocRoot(docroot string) string {
+	if !strings.HasSuffix(docroot, "/") {
+		return fmt.Sprintf("%s/", docroot)
+	}
+	return docroot
 }
 
 // MapHeader implement Middleware to map header field HTTP_*
