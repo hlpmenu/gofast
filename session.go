@@ -2,7 +2,6 @@ package gofast
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"path"
@@ -261,13 +260,6 @@ func (fs *FileSystemRouter) Router() Middleware {
 			req.Params["SCRIPT_FILENAME"] = fastcgiScriptFilename
 			req.Params["DOCUMENT_URI"] = r.URL.Path + "/"
 			req.Params["DOCUMENT_ROOT"] = docroot
-
-			log.Printf("PATH_INFO: %s", req.Params["PATH_INFO"])
-			log.Printf("PATH_TRANSLATED: %s", req.Params["PATH_TRANSLATED"])
-			log.Printf("SCRIPT_FILENAME: %s", req.Params["SCRIPT_FILENAME"])
-			log.Printf("SCRIPT_NAME: %s", req.Params["SCRIPT_NAME"])
-			log.Printf("DOCUMENT_URI: %s", req.Params["DOCUMENT_URI"])
-			log.Printf("DOCUMENT_ROOT: %s", req.Params["DOCUMENT_ROOT"])
 
 			// check if the script filename is within docroot.
 			// triggers error if not.
