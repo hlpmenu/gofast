@@ -2,6 +2,7 @@ package gofast
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"path"
@@ -225,12 +226,13 @@ func (fs *FileSystemRouter) Router() Middleware {
 	docroot := formatDocRoot(docroot) // Only use absolute path
 	return func(inner SessionHandler) SessionHandler {
 		return func(client Client, req *Request) (*ResponsePipe, error) {
-
+			log.Printf("docroot: %s", docroot)
 			// define some required cgi parameters
 			// with the given http request
 			r := req.Raw
 			fastcgiScriptFilename := filepath.Join(docroot, "index.php")
 			fastcgiScriptName := r.URL.Path
+			log.Printf("path from gofast: %s", r.URL.Path)
 
 			if (strings.HasSuffix(fastcgiScriptName, "/wp-admin") || strings.HasSuffix(fastcgiScriptName, "/wp-admin/")) && !strings.HasSuffix(fastcgiScriptName, ".php") {
 				fastcgiScriptFilename = filepath.Join(docroot, "wp-admin/index.php")
@@ -251,15 +253,27 @@ func (fs *FileSystemRouter) Router() Middleware {
 				fastcgiScriptName = path.Join(fastcgiScriptName, "index.php")
 			} else if filepath.Ext(fastcgiScriptName) != ".php" {
 				fastcgiScriptName = path.Join(docroot + "index.php")
+				fastcgiScriptFilename = path.Join(docroot, "index.php")
 				//fastcgiPathInfo = r.URL.Path
 			}
-
+			if strings.HasPrefix(fastcgiScriptName, "/index") {
+				fastcgiScriptName = strings.TrimPrefix(fastcgiScriptName, "/")
+				if strings.HasSuffix(docroot, "/") {
+					fastcgiScriptName = fmt.Sprintf("%s%s", docroot, fastcgiScriptName)
+				} else {
+					fastcgiScriptName = fmt.Sprintf("%s/%s", docroot, fastcgiScriptName)
+				}
+			}
 			req.Params["PATH_INFO"] = fastcgiPathInfo
 			req.Params["PATH_TRANSLATED"] = filepath.Join(docroot, fastcgiPathInfo)
-			req.Params["SCRIPT_NAME"] = fastcgiScriptName
+			req.Params["SCRIPT_NAME"] = fastcgiScriptFilename
 			req.Params["SCRIPT_FILENAME"] = fastcgiScriptFilename
-			req.Params["DOCUMENT_URI"] = r.URL.Path + "/"
+			req.Params["DOCUMENT_URI"] = r.URL.Path
 			req.Params["DOCUMENT_ROOT"] = docroot
+
+			log.Printf("PATH_INFO: %s", fastcgiPathInfo)
+			log.Printf("SCRIPT_NAME: %s", fastcgiScriptName)
+			log.Printf("SCRIPT_FILENAME: %s", fastcgiScriptFilename)
 
 			// check if the script filename is within docroot.
 			// triggers error if not.
